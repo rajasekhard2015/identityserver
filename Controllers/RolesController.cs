@@ -7,6 +7,7 @@ using IdentityServer.Data;
 using IdentityServer.Models;
 using IdentityServer.Models.DTOs;
 using IdentityServer.Models.Requests;
+using IdentityServer.Services;
 
 namespace IdentityServer.Controllers;
 
@@ -18,15 +19,18 @@ public class RolesController : ControllerBase
     private readonly RoleManager<ApplicationRole> _roleManager;
     private readonly ApplicationDbContext _context;
     private readonly ILogger<RolesController> _logger;
+    private readonly ICacheService _cacheService;
 
     public RolesController(
         RoleManager<ApplicationRole> roleManager,
         ApplicationDbContext context,
-        ILogger<RolesController> logger)
+        ILogger<RolesController> logger,
+        ICacheService cacheService)
     {
         _roleManager = roleManager;
         _context = context;
         _logger = logger;
+        _cacheService = cacheService;
     }
 
     /// <summary>
@@ -36,6 +40,17 @@ public class RolesController : ControllerBase
     [PermissionAuthorize("roles.read")]
     public async Task<IActionResult> GetRoles()
     {
+        const string cacheKey = "roles:all";
+        
+        // Try to get from cache first
+        var cachedRoles = await _cacheService.GetAsync<List<RoleDto>>(cacheKey);
+        if (cachedRoles != null)
+        {
+            _logger.LogDebug("Returning roles from cache");
+            return Ok(cachedRoles);
+        }
+
+        // If not in cache, get from database
         var roles = await _context.Roles
             .Include(r => r.RolePermissions)
             .ThenInclude(rp => rp.Permission)
@@ -57,6 +72,10 @@ public class RolesController : ControllerBase
             }).ToList()
         }).ToList();
 
+        // Cache the result
+        await _cacheService.SetAsync(cacheKey, roleDtos);
+        _logger.LogDebug("Roles cached for key: {CacheKey}", cacheKey);
+
         return Ok(roleDtos);
     }
 
@@ -67,6 +86,17 @@ public class RolesController : ControllerBase
     [PermissionAuthorize("roles.read")]
     public async Task<IActionResult> GetRole(string id)
     {
+        var cacheKey = _cacheService.GenerateKey("roles", id);
+        
+        // Try to get from cache first
+        var cachedRole = await _cacheService.GetAsync<RoleDto>(cacheKey);
+        if (cachedRole != null)
+        {
+            _logger.LogDebug("Returning role from cache for ID: {Id}", id);
+            return Ok(cachedRole);
+        }
+
+        // If not in cache, get from database
         var role = await _context.Roles
             .Include(r => r.RolePermissions)
             .ThenInclude(rp => rp.Permission)
@@ -92,6 +122,10 @@ public class RolesController : ControllerBase
                 CreatedAt = rp.Permission.CreatedAt
             }).ToList()
         };
+
+        // Cache the result
+        await _cacheService.SetAsync(cacheKey, roleDto);
+        _logger.LogDebug("Role cached for ID: {Id}, key: {CacheKey}", id, cacheKey);
 
         return Ok(roleDto);
     }
@@ -143,6 +177,9 @@ public class RolesController : ControllerBase
 
         _logger.LogInformation("Role {RoleName} created successfully by {CurrentUser}", 
             request.Name, User.Identity?.Name);
+
+        // Invalidate role cache
+        await InvalidateRoleCacheAsync(role.Id);
 
         return CreatedAtAction(nameof(GetRole), new { id = role.Id }, new { id = role.Id, message = "Role created successfully" });
     }
@@ -198,6 +235,9 @@ public class RolesController : ControllerBase
         _logger.LogInformation("Role {RoleId} updated successfully by {CurrentUser}", 
             id, User.Identity?.Name);
 
+        // Invalidate role cache
+        await InvalidateRoleCacheAsync(id);
+
         return Ok(new { message = "Role updated successfully" });
     }
 
@@ -226,6 +266,21 @@ public class RolesController : ControllerBase
         _logger.LogInformation("Role {RoleId} deleted successfully by {CurrentUser}", 
             id, User.Identity?.Name);
 
+        // Invalidate role cache
+        await InvalidateRoleCacheAsync(id);
+
         return Ok(new { message = "Role deleted successfully" });
+    }
+
+    private async Task InvalidateRoleCacheAsync(string roleId)
+    {
+        // Remove specific role cache
+        var roleKey = _cacheService.GenerateKey("roles", roleId);
+        await _cacheService.RemoveAsync(roleKey);
+        
+        // Remove all roles cache
+        await _cacheService.RemoveAsync("roles:all");
+        
+        _logger.LogDebug("Role cache invalidated for role ID: {RoleId}", roleId);
     }
 }
