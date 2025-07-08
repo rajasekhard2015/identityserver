@@ -14,7 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // Add Identity services
 builder.Services.AddIdentity<ApplicationUser, ApplicationRole>(options =>
@@ -147,8 +147,10 @@ if (app.Environment.IsDevelopment())
         options.DisplayRequestDuration();
     });
 }
-
-app.UseHttpsRedirection();
+else
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseCors("AllowAll");
 
